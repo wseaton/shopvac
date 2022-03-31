@@ -100,12 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pb = ProgressBar::new(bad_pods.len() as u64)
             .with_message("Dropping pods")
             .with_style(style.on_finish(ProgressFinish::AndLeave));
-        
-            let _res = stream::iter(&bad_pods)
-            .map(|name: &String| async {
-                let _ = &pb.inc(1);
-                pods.delete(name, dp).await
-            })
+
+        let _res = stream::iter(&bad_pods)
+            .map(|name: &String| async { (pods.delete(name, dp).await, pb.inc(1)).0 })
             .buffer_unordered(10)
             .collect::<Vec<_>>()
             .await;
