@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-kube = { version = "0.69.1", features = [
+kube = { version = "0.70.0", features = [
     "runtime",
     "derive",
 ] }
@@ -16,3 +16,4 @@ chrono = "*"
 
 futures = "0.3.21"
 clap = { version = "3.1.6", features = ["derive"] }
+indicatif = "0.16.2"
