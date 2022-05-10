@@ -27,8 +27,8 @@ struct Args {
     /// The tracing filter used for logs
     #[clap(
         long,
-        env = "KUBERT_EXAMPLE_LOG",
-        default_value = "watch_pods=info,warn"
+        env = "SHOPVAC_LOG",
+        default_value = "debug,kube=info"
     )]
     log_level: kubert::LogFilter,
 
@@ -61,6 +61,8 @@ enum Error {
     CronJobCreationFailed(#[source] kube::Error),
     #[error("MissingObjectKey: {0}")]
     MissingObjectKey(&'static str),
+    #[error("Failed to create CronJobSpec")]
+    CronJobSpecError
 }
 
 #[derive(CustomResource, Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -78,31 +80,48 @@ struct PodCleanerSpec {
 async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Action, Error> {
     let client = ctx.get_ref().client.clone();
 
-    let cjs: CronJobSpec = serde_json::from_value(json!({
+    // build up our args to pass to the cleaner binary
+    let mut args: Vec<String> = Vec::new();
+    // add the namespace we are currently in
+    args.push("-n".to_string());
+    args.push(generator.metadata.namespace.as_ref().ok_or(Error::MissingObjectKey(".metadata.namespace"))?.to_string());
+    // add label selectors
+    if let Some(ls) = &generator.spec.label_selector {
+        args.push("-l".to_string());
+        args.push(ls.to_string());
+    }
+    // add status selectors
+    if let Some(fs) =  &generator.spec.field_selector {
+        args.push("-f".to_string());
+        args.push(fs.to_string())
+    }
 
+    args.push("--older-than".to_string());
+    args.push(generator.spec.delete_older_than.to_string());
+    tracing::debug!("args: {:?}", args);
+
+    let cjs: CronJobSpec = serde_json::from_value(json!({
+        "schedule": generator.spec.schedule,
         "jobTemplate": {
             "spec":{
                 "template": {
                     "spec": {
+                        "restartPolicy": "Never",
                         "containers": [{
                         "name": "pod-delete",
                         "image": "quay.io/wseaton/shopvac:latest",
-                        "command": [
-                            "shopvac",
-                            "",
-                            ""
-                        ]
+                        "args": args
                         }],
                     }
                 }
             }
         }
-    })).unwrap();
+    })).expect("Failed to generate CronJobSpec");
 
     let oref = generator.controller_owner_ref(&()).unwrap();
     let cj = CronJob {
         metadata: ObjectMeta {
-            name: generator.metadata.name.clone(),
+            name: Some(format!("{name}-clean-job", name = generator.metadata.name.clone().unwrap())),
             namespace: generator.metadata.namespace.clone(),
             owner_references: Some(vec![oref]),
             ..ObjectMeta::default()
@@ -110,6 +129,9 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
         spec: Some(cjs),
         ..Default::default()
     };
+
+    tracing::debug!("\n{}", serde_yaml::to_string(&cj).unwrap());
+
     let cj_api = Api::<CronJob>::namespaced(
         client.clone(),
         generator
@@ -133,10 +155,12 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
 }
 
 
-
-
 #[tokio::main]
 async fn main() -> Result<()> {
+
+    // Use this to bootstrap the CR for dev purposes.
+    // println!("{}", serde_yaml::to_string(&PodCleaner::crd()).unwrap());
+
     let Args {
         log_level,
         log_format,
@@ -157,12 +181,11 @@ async fn main() -> Result<()> {
         .with_log(log_level, log_format)
         .with_admin(admin)
         .with_client(client);
-    let mut runtime = match time::timeout_at(deadline, rt.build()).await {
+    let runtime = match time::timeout_at(deadline, rt.build()).await {
         Ok(res) => res?,
         Err(_) => bail!("Timed out waiting for Kubernetes client to initialize"),
     };
 
-    let lps =  ListParams::default();
 
     let pcs = Api::<PodCleaner>::all(runtime.client().clone());
     let cj: Api<CronJob> = Api::<CronJob>::all(runtime.client().clone());
