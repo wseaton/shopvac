@@ -3,33 +3,32 @@
 use anyhow::{bail, Result};
 use clap::Parser;
 use futures::prelude::*;
-use k8s_openapi::api::{core::v1::{Pod, PodTemplateSpec, PodSpec}, batch::v1::{CronJob, CronJobSpec, JobTemplateSpec, JobSpec, Job}};
+use k8s_openapi::api::{
+    batch::v1::{CronJob, CronJobSpec, Job, JobSpec, JobTemplateSpec},
+    core::v1::{Pod, PodSpec, PodTemplateSpec, ServiceAccount},
+    rbac::v1::RoleBinding,
+};
 // use kube::{api::ListParams, runtime::watcher::Event, ResourceExt};
 use kube::{
-    api::{Api, ListParams, ObjectMeta, Patch, PatchParams, Resource},
+    api::{Api, ListParams, ObjectMeta, Patch, PatchParams, PostParams, Resource},
     runtime::controller::{Context, Controller},
-    runtime::{watcher::Event, controller::Action},
+    runtime::{controller::Action, watcher::Event},
     Client, CustomResource,
 };
-use serde_json::json;
-use std::{collections::BTreeMap, io::BufRead, sync::Arc};
+use kubert::client::{CustomResourceExt, ResourceExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::{collections::BTreeMap, io::BufRead, sync::Arc};
 use thiserror::Error;
 use tokio::time;
 use tracing::Instrument;
-use kubert::client::{CustomResourceExt, ResourceExt};
-
 
 #[derive(Parser)]
 #[clap(version)]
 struct Args {
     /// The tracing filter used for logs
-    #[clap(
-        long,
-        env = "SHOPVAC_LOG",
-        default_value = "debug,kube=info"
-    )]
+    #[clap(long, env = "SHOPVAC_LOG", default_value = "debug,kube=info")]
     log_level: kubert::LogFilter,
 
     /// The logging format
@@ -62,7 +61,7 @@ enum Error {
     #[error("MissingObjectKey: {0}")]
     MissingObjectKey(&'static str),
     #[error("Failed to create CronJobSpec")]
-    CronJobSpecError
+    CronJobSpecError,
 }
 
 #[derive(CustomResource, Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -73,25 +72,115 @@ struct PodCleanerSpec {
     schedule: String,
     delete_older_than: i8,
     label_selector: Option<String>,
-    field_selector: Option<String>
+    field_selector: Option<String>,
 }
-
 
 async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Action, Error> {
     let client = ctx.get_ref().client.clone();
 
+    // first we must create a service account
+    let sa_api = Api::<ServiceAccount>::namespaced(
+        client.clone(),
+        generator
+            .metadata
+            .namespace
+            .as_ref()
+            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
+    );
+    let sa: ServiceAccount = serde_json::from_value(json!({
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+            "ownerReferences": Some(vec![generator.controller_owner_ref(&()).unwrap()]),
+            "namespace": generator
+            .metadata
+            .namespace
+            .as_ref()
+            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
+            "name": "shopvac",
+        },
+    }))
+    .unwrap();
+    sa_api
+        .patch(
+            sa.metadata
+                .name
+                .as_ref()
+                .ok_or(Error::MissingObjectKey(".metadata.name"))?,
+            &PatchParams::apply("podcleaner.kube-rt.shopvac.io"),
+            &Patch::Apply(&sa),
+        )
+        .await
+        .map_err(Error::CronJobCreationFailed)?;
+
+    // NEXT WE MUST DO RBAC
+    let rb: RoleBinding = serde_json::from_value(json!({
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {
+            "name": "shopvac-delete-rb",
+            "ownerReferences": Some(vec![generator.controller_owner_ref(&()).unwrap()]),
+            "namespace":  generator
+            .metadata
+            .namespace
+            .as_ref()
+            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
+        },
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": "shopvac-pod-deletion-role"
+        },
+        "subjects": [
+            {
+                "kind": "ServiceAccount",
+                "name": "shopvac"
+            }
+        ]
+    }))
+    .unwrap();
+
+    let rb_api = Api::<RoleBinding>::namespaced(
+        client.clone(),
+        generator
+            .metadata
+            .namespace
+            .as_ref()
+            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
+    );
+    rb_api
+        .patch(
+            rb.metadata
+                .name
+                .as_ref()
+                .ok_or(Error::MissingObjectKey(".metadata.name"))?,
+            &PatchParams::apply("podcleaner.kube-rt.shopvac.io"),
+            &Patch::Apply(&rb),
+        )
+        .await
+        .map_err(Error::CronJobCreationFailed)?;
+
+    // CRON JOB PART
     // build up our args to pass to the cleaner binary
     let mut args: Vec<String> = Vec::new();
+    args.push("--actually-delete".to_string());
     // add the namespace we are currently in
     args.push("-n".to_string());
-    args.push(generator.metadata.namespace.as_ref().ok_or(Error::MissingObjectKey(".metadata.namespace"))?.to_string());
+    args.push(
+        generator
+            .metadata
+            .namespace
+            .as_ref()
+            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?
+            .to_string(),
+    );
     // add label selectors
     if let Some(ls) = &generator.spec.label_selector {
         args.push("-l".to_string());
         args.push(ls.to_string());
     }
     // add status selectors
-    if let Some(fs) =  &generator.spec.field_selector {
+    if let Some(fs) = &generator.spec.field_selector {
         args.push("-f".to_string());
         args.push(fs.to_string())
     }
@@ -106,6 +195,7 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
             "spec":{
                 "template": {
                     "spec": {
+                        "serviceAccountName": "shopvac",
                         "restartPolicy": "Never",
                         "containers": [{
                         "name": "pod-delete",
@@ -116,14 +206,17 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
                 }
             }
         }
-    })).expect("Failed to generate CronJobSpec");
+    }))
+    .expect("Failed to generate CronJobSpec");
 
-    let oref = generator.controller_owner_ref(&()).unwrap();
     let cj = CronJob {
         metadata: ObjectMeta {
-            name: Some(format!("{name}-clean-job", name = generator.metadata.name.clone().unwrap())),
+            name: Some(format!(
+                "{name}-clean-job",
+                name = generator.metadata.name.clone().unwrap()
+            )),
             namespace: generator.metadata.namespace.clone(),
-            owner_references: Some(vec![oref]),
+            owner_references: Some(vec![generator.controller_owner_ref(&()).unwrap()]),
             ..ObjectMeta::default()
         },
         spec: Some(cjs),
@@ -140,6 +233,7 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
             .as_ref()
             .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
     );
+
     cj_api
         .patch(
             cj.metadata
@@ -154,10 +248,8 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
     Ok(Action::requeue(tokio::time::Duration::from_secs(300)))
 }
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
-
     // Use this to bootstrap the CR for dev purposes.
     // println!("{}", serde_yaml::to_string(&PodCleaner::crd()).unwrap());
 
@@ -186,7 +278,6 @@ async fn main() -> Result<()> {
         Err(_) => bail!("Timed out waiting for Kubernetes client to initialize"),
     };
 
-
     let pcs = Api::<PodCleaner>::all(runtime.client().clone());
     let cj: Api<CronJob> = Api::<CronJob>::all(runtime.client().clone());
 
@@ -203,7 +294,13 @@ async fn main() -> Result<()> {
         .owns(cj, ListParams::default())
         .reconcile_all_on(reload_rx.map(|_| ()))
         .shutdown_on_signal()
-        .run(reconcile, error_policy, Context::new(Data { client: runtime.client().clone() }))
+        .run(
+            reconcile,
+            error_policy,
+            Context::new(Data {
+                client: runtime.client().clone(),
+            }),
+        )
         .for_each(|res| async move {
             match res {
                 Ok(o) => tracing::info!("reconciled {:?}", o),
@@ -212,7 +309,6 @@ async fn main() -> Result<()> {
         })
         .await;
     tracing::info!("controller terminated");
-
 
     Ok(())
 }
