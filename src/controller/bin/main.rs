@@ -4,25 +4,24 @@ use anyhow::{bail, Result};
 use clap::Parser;
 use futures::prelude::*;
 use k8s_openapi::api::{
-    batch::v1::{CronJob, CronJobSpec, Job, JobSpec, JobTemplateSpec},
-    core::v1::{Pod, PodSpec, PodTemplateSpec, ServiceAccount},
+    batch::v1::{CronJob, CronJobSpec},
+    core::v1::ServiceAccount,
     rbac::v1::RoleBinding,
 };
 // use kube::{api::ListParams, runtime::watcher::Event, ResourceExt};
 use kube::{
-    api::{Api, ListParams, ObjectMeta, Patch, PatchParams, PostParams, Resource},
+    api::{Api, ListParams, ObjectMeta, Patch, PatchParams, Resource},
+    runtime::controller::Action,
     runtime::controller::{Context, Controller},
-    runtime::{controller::Action, watcher::Event},
     Client, CustomResource,
 };
-use kubert::client::{CustomResourceExt, ResourceExt};
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{collections::BTreeMap, io::BufRead, sync::Arc};
+use std::{io::BufRead, sync::Arc};
 use thiserror::Error;
 use tokio::time;
-use tracing::Instrument;
 
 #[derive(Parser)]
 #[clap(version)]
