@@ -257,9 +257,9 @@ async fn main() -> Result<()> {
         log_format,
         client,
         admin,
-        exit,
+        exit: _,
         timeout: Timeout(timeout),
-        selector,
+        selector: _,
     } = Args::parse();
 
     let deadline = time::Instant::now() + timeout;
@@ -277,21 +277,11 @@ async fn main() -> Result<()> {
         Err(_) => bail!("Timed out waiting for Kubernetes client to initialize"),
     };
 
-    let pcs = Api::<PodCleaner>::all(runtime.client().clone());
-    let cj: Api<CronJob> = Api::<CronJob>::all(runtime.client().clone());
-
-    let (mut reload_tx, reload_rx) = futures::channel::mpsc::channel(0);
-    // Using a regular background thread since tokio::io::stdin() doesn't allow aborting reads,
-    // and its worker prevents the Tokio runtime from shutting down.
-    std::thread::spawn(move || {
-        for _ in std::io::BufReader::new(std::io::stdin()).lines() {
-            let _ = reload_tx.try_send(());
-        }
-    });
+    let pcs = Api::<PodCleaner>::all(runtime.client());
+    let cj: Api<CronJob> = Api::<CronJob>::all(runtime.client());
 
     Controller::new(pcs, ListParams::default())
         .owns(cj, ListParams::default())
-        .reconcile_all_on(reload_rx.map(|_| ()))
         .shutdown_on_signal()
         .run(
             reconcile,
@@ -303,7 +293,7 @@ async fn main() -> Result<()> {
         .for_each(|res| async move {
             match res {
                 Ok(o) => tracing::info!("reconciled {:?}", o),
-                Err(e) => tracing::warn!("reconcile failed: {}", e),
+                Err(e) => tracing::error!("reconcile failed: {:?}", e),
             }
         })
         .await;
@@ -345,7 +335,7 @@ impl std::str::FromStr for Timeout {
     }
 }
 
-async fn init_timeout<F: Future>(deadline: Option<time::Instant>, future: F) -> Result<F::Output> {
+async fn _init_timeout<F: Future>(deadline: Option<time::Instant>, future: F) -> Result<F::Output> {
     if let Some(deadline) = deadline {
         return time::timeout_at(deadline, future).await.map_err(Into::into);
     }
