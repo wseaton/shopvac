@@ -123,7 +123,7 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
         "subjects": [
             {
                 "kind": "ServiceAccount",
-                "name": format!("system:serviceaccounts:{target_namespace}:shopvac", target_namespace = target_namespace)
+                "name": "shopvac"
             }
         ]
     }))

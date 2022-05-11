@@ -41,11 +41,16 @@ spec:
       - serviceAccountName: shopvac-operator
         rules:
         - apiGroups:
-          - ""
+          - "*"
           resources:
           - pods
           verbs:
-          - '*'
+          - list
+          - get
+          - update
+          - patch
+          - delete
+          - watch
         - apiGroups:
           - "batch"
           resources:
