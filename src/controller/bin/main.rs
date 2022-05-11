@@ -76,26 +76,20 @@ struct PodCleanerSpec {
 
 async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Action, Error> {
     let client = ctx.get_ref().client.clone();
+    let target_namespace = generator
+        .metadata
+        .namespace
+        .as_ref()
+        .ok_or(Error::MissingObjectKey(".metadata.namespace"))?;
 
     // first we must create a service account
-    let sa_api = Api::<ServiceAccount>::namespaced(
-        client.clone(),
-        generator
-            .metadata
-            .namespace
-            .as_ref()
-            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
-    );
+    let sa_api = Api::<ServiceAccount>::namespaced(client.clone(), target_namespace);
     let sa: ServiceAccount = serde_json::from_value(json!({
         "apiVersion": "v1",
         "kind": "ServiceAccount",
         "metadata": {
             "ownerReferences": Some(vec![generator.controller_owner_ref(&()).unwrap()]),
-            "namespace": generator
-            .metadata
-            .namespace
-            .as_ref()
-            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
+            "namespace": target_namespace,
             "name": "shopvac",
         },
     }))
@@ -119,34 +113,23 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
         "metadata": {
             "name": "shopvac-delete-rb",
             "ownerReferences": Some(vec![generator.controller_owner_ref(&()).unwrap()]),
-            "namespace":  generator
-            .metadata
-            .namespace
-            .as_ref()
-            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
+            "namespace":  target_namespace,
         },
         "roleRef": {
             "apiGroup": "rbac.authorization.k8s.io",
-            "kind": "Role",
+            "kind": "ClusterRole",
             "name": "shopvac-pod-deletion-role"
         },
         "subjects": [
             {
                 "kind": "ServiceAccount",
-                "name": "shopvac"
+                "name": format!("system:serviceaccounts:{target_namespace}:shopvac", target_namespace = target_namespace)
             }
         ]
     }))
     .unwrap();
 
-    let rb_api = Api::<RoleBinding>::namespaced(
-        client.clone(),
-        generator
-            .metadata
-            .namespace
-            .as_ref()
-            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
-    );
+    let rb_api = Api::<RoleBinding>::namespaced(client.clone(), target_namespace);
     rb_api
         .patch(
             rb.metadata
@@ -165,14 +148,7 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
     args.push("--actually-delete".to_string());
     // add the namespace we are currently in
     args.push("-n".to_string());
-    args.push(
-        generator
-            .metadata
-            .namespace
-            .as_ref()
-            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?
-            .to_string(),
-    );
+    args.push(target_namespace.to_string());
     // add label selectors
     if let Some(ls) = &generator.spec.label_selector {
         args.push("-l".to_string());
@@ -224,14 +200,7 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
 
     tracing::debug!("\n{}", serde_yaml::to_string(&cj).unwrap());
 
-    let cj_api = Api::<CronJob>::namespaced(
-        client.clone(),
-        generator
-            .metadata
-            .namespace
-            .as_ref()
-            .ok_or(Error::MissingObjectKey(".metadata.namespace"))?,
-    );
+    let cj_api = Api::<CronJob>::namespaced(client.clone(), target_namespace);
 
     cj_api
         .patch(
