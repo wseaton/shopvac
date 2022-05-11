@@ -129,6 +129,8 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
     }))
     .unwrap();
 
+    tracing::debug!("\n{}", serde_yaml::to_string(&rb).unwrap());
+
     let rb_api = Api::<RoleBinding>::namespaced(client.clone(), target_namespace);
     rb_api
         .patch(
