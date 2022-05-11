@@ -15,7 +15,6 @@ use kube::{
     runtime::controller::{Context, Controller},
     Client, CustomResource,
 };
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -168,6 +167,9 @@ async fn reconcile(generator: Arc<PodCleaner>, ctx: Context<Data>) -> Result<Act
 
     let cjs: CronJobSpec = serde_json::from_value(json!({
         "schedule": generator.spec.schedule,
+        "concurrencyPolicy": "Forbid",
+        "failedJobsHistoryLimit": "1",
+        "successfulJobsHistoryLimit": "1",
         "jobTemplate": {
             "spec":{
                 "template": {
