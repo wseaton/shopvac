@@ -1,0 +1,17 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  annotations:
+  name: shopvac-pod-deletion-role
+rules:
+- verbs:
+  - list
+  - get
+  - update
+  - patch
+  - delete
+  - watch
+  apiGroups:
+    - "*"
+  resources:
+    - pods

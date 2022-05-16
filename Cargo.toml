@@ -3,21 +3,39 @@ name = "shopvac"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[[bin]]
+name = "shopvac"
+path = "src/client/bin/main.rs"
 
+[[bin]]
+name = "shopvac-controller"
+path = "src/controller/bin/main.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-kube = { version = "0.69.1", features = [
+# pinning to kube-rt: https://github.com/olix0r/kubert/blob/main/kubert/Cargo.toml
+kube = { version = "0.71", features = [
     "runtime",
     "derive",
+    "admission",
+    "rustls-tls"
 ] }
 k8s-openapi = { version = "0.14.0", features = ["v1_22"] }
 tokio = { version = "1.14.0", features = ["full"] }
 chrono = "*"
 
 futures = "0.3.21"
-clap = { version = "3.1.6", features = ["derive"] }
+clap = { version = "3", default-features = false, features = ["derive", "env", "std"] }
 
 color-eyre = "0.6.1"
 tracing = "0.1.34"
 tracing-subscriber = "0.3.11"
 regex = "1.5.5"
+
+serde_json = "*"
+serde = "*"
+thiserror = "*"
+anyhow = "*"
+schemars = "0.8.6"
+kubert = { version = "0.6.0", features = ["client", "clap", "runtime"]}
+serde_yaml = "0.8.24"
