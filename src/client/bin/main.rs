@@ -29,6 +29,10 @@ struct Args {
     #[clap(short, long, default_value_t = 3)]
     older_than: i8,
 
+    /// Remove pods that are older_than X hours
+    #[clap(short, long, default_value_t = 72)]
+    older_than_hours: i8,
+
     /// Label selector to use
     #[clap(short, long)]
     label_selector: Option<String>,
@@ -81,6 +85,13 @@ async fn main() -> Result<()> {
     // use the pod API to grab all of the pods that meet our pre-filter criteria
     let pod_list = pods.list(&lp).await?;
 
+    // do some argument handling
+    let older_than_hours = if args.older_than * 24 <= args.older_than_hours {
+        args.older_than * 24
+    } else {
+        args.older_than_hours
+    };
+
     let bad_pods: Vec<String> = pod_list
         .iter()
         .filter(|p| {
@@ -92,12 +103,12 @@ async fn main() -> Result<()> {
 
             if let Some(ct) = &p.metadata.creation_timestamp {
                 let duration = now - ct.0;
-                if duration.num_days() > (args.older_than as i64) {
+                if duration.num_hours() > (older_than_hours as i64) {
                     tracing::info!(
-                        "Found bad pod! {}:{}, duration: {:?} days old",
+                        "Found bad pod! {}:{}, duration: {:?} hours old",
                         p.namespace().as_ref().unwrap(),
                         p.name(),
-                        duration.num_days()
+                        duration.num_hours()
                     );
                     Some(p.name())
                 } else {
